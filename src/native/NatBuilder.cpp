@@ -49,7 +49,7 @@ CreateBroadcast(IRBuilder<> & builder, Value & vec, int idx) {
 
 Value*
 CreateScalarBroadcast(IRBuilder<> & builder, Value & scaValue, int elemCount) {
-  auto * vecTy = VectorType::get(scaValue.getType(), elemCount);
+  auto * vecTy = VectorType::get(scaValue.getType(), elemCount, false);
   auto * udVal = UndefValue::get(vecTy);
   auto & firstLaneVec = *builder.CreateInsertElement(udVal, &scaValue, (uint64_t) 0, scaValue.getName() + ".infirst");
   return CreateBroadcast(builder, firstLaneVec, 0);
@@ -276,7 +276,7 @@ void NatBuilder::vectorize(bool embedRegion, ValueToValueMapTy * vecInstMap) {
     vectorize(bb, vecBlock);
 
     // populate queue with pre-order dominators
-    for (auto it = node->getChildren().begin(), et = node->getChildren().end(); it != et; ++it) {
+    for (auto it = node->children().begin(), et = node->children().end(); it != et; ++it) {
       nodeQueue.push_back(*it);
     }
   }
@@ -448,7 +448,7 @@ void NatBuilder::vectorize(BasicBlock *const bb, BasicBlock *vecBlock) {
 
 ValVec
 NatBuilder::scalarize(BasicBlock & scaBlock, Instruction & inst, bool packResult, std::function<Value*(IRBuilder<>&,size_t)> genFunc) {
-  auto * vecTy = packResult ? VectorType::get(inst.getType(), vectorWidth()) : nullptr;
+  auto * vecTy = packResult ? VectorType::get(inst.getType(), vectorWidth(), false) : nullptr;
   Value * accu = packResult ? UndefValue::get(vecTy) : nullptr;
 
   ValVec laneRepls;
@@ -545,7 +545,7 @@ NatBuilder::scalarizeCascaded(BasicBlock & srcBlock, Instruction & inst, bool pa
    builder.SetInsertPoint(condBlocks[0]);
 
    // vector aggregate if packing was requested
-   auto * vecTy = packResult ? VectorType::get(inst.getType(), vectorWidth()) : nullptr;
+   auto * vecTy = packResult ? VectorType::get(inst.getType(), vectorWidth(), false) : nullptr;
    Value * accu = packResult ? UndefValue::get(vecTy) : nullptr;
 
    bool producesValue = !inst.getType()->isVoidTy();
@@ -834,6 +834,7 @@ void NatBuilder::vectorizeReductionCall(CallInst *rvCall, bool isRv_all) {
 
   Value *predicate = rvCall->getArgOperand(0);
   const VectorShape &shape = getVectorShape(*predicate);
+  static_cast<void>(shape);
   assert((shape.isVarying() || shape.isUniform()) && "predicate can't be contigious or strided");
 
   Value *reduction;
@@ -1010,7 +1011,7 @@ NatBuilder::createVectorMaskSummary(Type & indexTy, Value * vecVal, IRBuilder<> 
   Module *mod = vecInfo.getMapping().vectorFn->getParent();
 
   auto vecWidth = cast<FixedVectorType>(vecVal->getType())->getNumElements();
-  auto * intVecTy = VectorType::get(&indexTy, vecWidth);
+  auto * intVecTy = VectorType::get(&indexTy, vecWidth, false);
 
   Value * result = nullptr;
   switch (mode) {
@@ -1051,8 +1052,8 @@ NatBuilder::createVectorMaskSummary(Type & indexTy, Value * vecVal, IRBuilder<> 
           fail("Unsupported vector width in ballot !");
         }
 
-        auto * extVal = builder.CreateSExt(vecVal, VectorType::get(builder.getIntNTy(bits), vecWidth), "rv_ballot");
-        auto * simdVal = builder.CreateBitCast(extVal, VectorType::get(bits == 32 ? builder.getFloatTy() : builder.getDoubleTy(), vecWidth), "rv_ballot");
+        auto * extVal = builder.CreateSExt(vecVal, VectorType::get(builder.getIntNTy(bits), vecWidth, false), "rv_ballot");
+        auto * simdVal = builder.CreateBitCast(extVal, VectorType::get(bits == 32 ? builder.getFloatTy() : builder.getDoubleTy(), vecWidth, false), "rv_ballot");
 
         auto movMaskDecl = Intrinsic::getDeclaration(mod, id);
         result = builder.CreateCall(movMaskDecl, simdVal, "rv_ballot");
@@ -1104,6 +1105,7 @@ NatBuilder::vectorizeBallotCall(CallInst *rvCall) {
   ++numRVIntrinsics;
 
   auto vecWidth = vecInfo.getVectorWidth();
+  static_cast<void>(vecWidth);
   assert((vecWidth == 4 || vecWidth == 8) && "rv_ballot only supports SSE and AVX instruction sets");
   assert(rvCall->getNumArgOperands() == 1 && "expected 1 argument for rv_ballot(cond)");
 
@@ -1144,8 +1146,8 @@ NatBuilder::vectorizeIndexCall(CallInst & rvCall) {
 
 
     auto * fpLaneTy = Type::getDoubleTy(rvCall.getContext());
-    auto * fpVecTy = VectorType::get(fpLaneTy, vecWidth);
-    auto * intVecTy = VectorType::get(intLaneTy, vecWidth);
+    auto * fpVecTy = VectorType::get(fpLaneTy, vecWidth, false);
+    auto * intVecTy = VectorType::get(intLaneTy, vecWidth, false);
 
     auto * fpValVec = builder.CreateBitCast(contVec, fpVecTy);
 
@@ -1783,7 +1785,7 @@ NatBuilder::createVaryingToUniformStore(Instruction *inst, Type *accessedType, l
 #ifdef NAT_GENERIC_MAXLANE
     // generic but slow implementation
     // SExt to full width int
-    auto * vecLaneTy = VectorType::get(nativeIntTy, vectorWidth());
+    auto * vecLaneTy = VectorType::get(nativeIntTy, vectorWidth(), false);
     auto * sxMask = builder.CreateSExt(mask, vecLaneTy);
 
     // AND with lane index vector
@@ -2040,7 +2042,7 @@ NatBuilder::requestVectorValue(Value *const value) {
 
   auto shape = getVectorShape(*value);
   if (shape.isVarying()) { // !vecValue
-    auto * vecTy = VectorType::get(value->getType(), vectorWidth());
+    auto * vecTy = VectorType::get(value->getType(), vectorWidth(), false);
     Value * accu = UndefValue::get(vecTy);
     auto * intTy = Type::getInt32Ty(builder.getContext());
 
@@ -2108,7 +2110,7 @@ NatBuilder::widenScalar(Value & scaValue, VectorShape vecShape) {
       } else {
         // sub element stride
         auto * charPtrTy = builder.getInt8PtrTy(AddrSpace);
-        auto * charPtrVec = builder.CreatePointerCast(vecValue, VectorType::get(charPtrTy, vectorWidth()), "byte_ptr");
+        auto * charPtrVec = builder.CreatePointerCast(vecValue, VectorType::get(charPtrTy, vectorWidth(), false), "byte_ptr");
         Value *contVec = createContiguousVector(vectorWidth(), intTy, 0, vecShape.getStride());
         auto * bytePtrVec = builder.CreateGEP(charPtrVec, contVec, "expand_byte_ptr");
         vecValue = builder.CreatePointerCast(bytePtrVec, actualPtrVecTy);

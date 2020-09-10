@@ -509,7 +509,7 @@ void VectorizationAnalysis::init(const Function &F) {
           I.printAsOperand(errs(), false);
           errs() << "\n";
         };
-      } else if (isa<PHINode>(I) && any_of(I.operands(), isa<Constant, Use>)) {
+      } else if (isa<PHINode>(I) && any_of(I.operands(), [](const auto& a){ return isa<Constant>(a); })) {
         // Phis that depend on constants are added to the WL
         putOnWorklist(I);
 
